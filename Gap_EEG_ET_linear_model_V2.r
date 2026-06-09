@@ -520,7 +520,13 @@ write.csv(one_sample_df, "output/tables/Q1_RT_one_sample_tests.csv", row.names =
 # - Raw Gap/Overlap amplitude outcomes: GAMs with k selection (3, 5, 8)
 # =============================================================================
 
+ALPHA_THRESHOLD <- 0.05
+ICC_THRESHOLD <- 0.03
+
 get_icc <- function(outcome_name, default = 0) {
+  if (!exists("icc_results") || !all(c("outcome", "ICC") %in% names(icc_results))) {
+    return(default)
+  }
   idx <- which(icc_results$outcome == outcome_name)
   if (length(idx) == 0 || is.na(icc_results$ICC[idx][1])) return(default)
   as.numeric(icc_results$ICC[idx][1])
@@ -540,7 +546,7 @@ cat("\n--- disengagement_rt ---\n"); print(summary(lm_q3_diseng_rt))
 cat("\n=== Q3 age trajectories: raw amplitude GAMs (k = 3, 5, 8) ===\n")
 
 q3_gap_amp_icc <- get_icc("Gap_amp")
-if (q3_gap_amp_icc > 0.03) {
+if (q3_gap_amp_icc > ICC_THRESHOLD) {
   gam_q3_gap_amp_k3 <- gam(Gap_amp ~ s(age, k = 3) + sex + site + s(fam_id, bs = "re"), data = data_q3_gap_amp, method = "REML")
   gam_q3_gap_amp_k5 <- gam(Gap_amp ~ s(age, k = 5) + sex + site + s(fam_id, bs = "re"), data = data_q3_gap_amp, method = "REML")
   gam_q3_gap_amp_k8 <- gam(Gap_amp ~ s(age, k = 8) + sex + site + s(fam_id, bs = "re"), data = data_q3_gap_amp, method = "REML")
@@ -551,7 +557,7 @@ if (q3_gap_amp_icc > 0.03) {
 }
 
 q3_overlap_amp_icc <- get_icc("Overlap_amp")
-if (q3_overlap_amp_icc > 0.03) {
+if (q3_overlap_amp_icc > ICC_THRESHOLD) {
   gam_q3_overlap_amp_k3 <- gam(Overlap_amp ~ s(age, k = 3) + sex + site + s(fam_id, bs = "re"), data = data_q3_overlap_amp, method = "REML")
   gam_q3_overlap_amp_k5 <- gam(Overlap_amp ~ s(age, k = 5) + sex + site + s(fam_id, bs = "re"), data = data_q3_overlap_amp, method = "REML")
   gam_q3_overlap_amp_k8 <- gam(Overlap_amp ~ s(age, k = 8) + sex + site + s(fam_id, bs = "re"), data = data_q3_overlap_amp, method = "REML")
@@ -590,6 +596,7 @@ cat("\n--- Best Overlap_amp model summary ---\n"); print(summary(gam_q3_overlap_
 get_age_smooth_p <- function(gam_model) {
   s_tab <- summary(gam_model)$s.table
   age_row <- grep("^s\\(age", rownames(s_tab))[1]
+  if (is.na(age_row)) return(NA_real_)
   as.numeric(s_tab[age_row, "p-value"])
 }
 
@@ -605,7 +612,7 @@ q3_age_results <- data.frame(
   p_age = round(q3_age_pvals, 6)
 )
 q3_age_results$p_age_BH <- round(p.adjust(q3_age_results$p_age, method = "BH"), 6)
-q3_age_results$sig_BH <- ifelse(q3_age_results$p_age_BH < .05, "*", "ns")
+q3_age_results$sig_BH <- ifelse(q3_age_results$p_age_BH < ALPHA_THRESHOLD, "*", "ns")
 print(q3_age_results)
 write.csv(q3_age_results, "output/tables/Q3_age_trajectory_BH_FDR.csv", row.names = FALSE)
 write.csv(rbind(q3_gap_amp_aic, q3_overlap_amp_aic), "output/tables/Q3_amp_k_selection.csv", row.names = FALSE)
@@ -618,7 +625,7 @@ write.csv(rbind(q3_gap_amp_aic, q3_overlap_amp_aic), "output/tables/Q3_amp_k_sel
 # - No latency models
 # =============================================================================
 
-q4_sig_amp <- q3_age_results$Outcome[q3_age_results$Outcome %in% c("Gap_amp", "Overlap_amp") & q3_age_results$p_age_BH < 0.05]
+q4_sig_amp <- q3_age_results$Outcome[q3_age_results$Outcome %in% c("Gap_amp", "Overlap_amp") & q3_age_results$p_age_BH < ALPHA_THRESHOLD]
 cat("\nQ4 amplitude outcomes carried forward from Q3 BH-FDR:\n")
 print(q4_sig_amp)
 
@@ -688,7 +695,7 @@ if ("Overlap_amp" %in% q4_sig_amp) {
 }
 
 q4_results$p_BH <- round(p.adjust(q4_results$p, method = "BH"), 6)
-q4_results$sig_BH <- ifelse(q4_results$p_BH < .05, "*", "ns")
+q4_results$sig_BH <- ifelse(q4_results$p_BH < ALPHA_THRESHOLD, "*", "ns")
 print(q4_results)
 write.csv(q4_results, "output/tables/Q4_diagnostic_tests_BH_FDR.csv", row.names = FALSE)
 
@@ -700,17 +707,19 @@ write.csv(q4_results, "output/tables/Q4_diagnostic_tests_BH_FDR.csv", row.names 
 # =============================================================================
 
 extract_model_p <- function(model_obj, term_name) {
+  coef_table <- summary(model_obj)$coefficients
+  if (!(term_name %in% rownames(coef_table))) return(NA_real_)
   if (inherits(model_obj, "lmerModLmerTest") || inherits(model_obj, "lmerMod")) {
-    return(summary(model_obj)$coefficients[term_name, "Pr(>|t|)"])
+    return(coef_table[term_name, "Pr(>|t|)"])
   }
-  summary(model_obj)$coefficients[term_name, "Pr(>|t|)"]
+  coef_table[term_name, "Pr(>|t|)"]
 }
 
 fit_rt_model <- function(df, outcome, predictor) {
   icc_val <- get_icc(outcome)
   fml_lm <- as.formula(paste0(outcome, " ~ ", predictor, " + age + sex + site"))
   fml_lmer <- as.formula(paste0(outcome, " ~ ", predictor, " + age + sex + site + (1 | fam_id)"))
-  if (icc_val > 0.03) {
+  if (icc_val > ICC_THRESHOLD) {
     lmer(fml_lmer, data = df, REML = TRUE)
   } else {
     lm(fml_lm, data = df)
@@ -743,7 +752,7 @@ q5_results <- data.frame(
   )
 )
 q5_results$p_BH <- round(p.adjust(q5_results$p, method = "BH"), 6)
-q5_results$sig_BH <- ifelse(q5_results$p_BH < .05, "*", "ns")
+q5_results$sig_BH <- ifelse(q5_results$p_BH < ALPHA_THRESHOLD, "*", "ns")
 
 print(q5_results)
 write.csv(q5_results, "output/tables/Q5_ERP_amp_to_RT_BH_FDR.csv", row.names = FALSE)
